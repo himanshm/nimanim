@@ -1,7 +1,29 @@
-# This is just an example to get you started. A typical library package
-# exports the main API in this file. Note that you cannot rename this file
-# but you can remove it if you wish.
+## nimanim -- a small, manim-inspired 2D animation engine for Nim.
+##
+## Renders scenes with Cairo and encodes them to MP4 with ffmpeg. Import
+## this single module to get everything: shapes, animations, and Scene.
+##
+## Quick example:
+##
+##   import nimanim
+##
+##   proc construct(s: Scene) =
+##     let circle = newCircle(radius = 1.5, strokeColor = BLUE, fillColor = BLUE,
+##                             fillOpacity = 0.5)
+##     s.add(circle)
+##     s.play(create(circle))
+##     s.play(shiftBy(circle, (3.0, 0.0)))
+##     s.wait(0.5)
+##
+##   let scene = newScene()
+##   renderScene(scene, construct, "output/my_video.mp4")
 
-proc add*(x, y: int): int =
-  ## Adds two numbers together.
-  return x + y
+import ./nimanim/core
+import ./nimanim/mobject
+import ./nimanim/animation
+import ./nimanim/scene
+
+export core
+export mobject
+export animation
+export scene
