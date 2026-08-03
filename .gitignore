@@ -3,3 +3,7 @@ nimblecache/
 htmldocs/
 output/
 basic_scene
+media/
+*.tmpvid.mp4
+voiceover_*
+kokoro_tmp/

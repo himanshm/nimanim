@@ -1,6 +1,12 @@
 ## Scene ties everything together: it holds the mobjects currently on
 ## screen, maps "scene units" to pixels, and drives ffmpeg to encode the
 ## frames produced each `play()`/`wait()` call into an MP4.
+##
+## Audio support: a Scene has an optional `audioTrackBuilder` hook. If set,
+## `renderScene` first writes the video to a temp file, then calls the hook
+## to obtain a mixed audio track (a path to a WAV/MP3 file), and finally
+## muxes video + audio into the final output. This is what the optional
+## `nimanim/voiceover` module uses to splice narration over animations.
 
 import std/[osproc, streams, os]
 import cairo
@@ -9,12 +15,20 @@ import ./mobject
 import ./animation
 
 type
+  AudioTrackBuilder* = proc(s: Scene): string {.closure.}
+    ## Called by `renderScene` after `construct` has finished producing all
+    ## video frames. Returns the path to a mixed audio file (WAV/MP3) to be
+    ## muxed into the final MP4, or "" to skip muxing and keep the video as-is.
+
   Scene* = ref object
     pixelWidth*, pixelHeight*: int
     frameWidth*, frameHeight*: float ## scene-unit size of the visible frame
     fps*: int
     backgroundColor*: Color
     mobjects*: seq[Mobject]
+
+    ## Optional audio hook -- nil for plain Scene, set by VoiceoverScene.
+    audioTrackBuilder*: AudioTrackBuilder
 
     surface: ptr Surface
     ctx: ptr Context
@@ -114,6 +128,11 @@ proc renderScene*(scene: Scene, construct: proc(s: Scene),
                    outputPath: string) =
   ## Opens the ffmpeg pipe, runs `construct` (which should call `add`,
   ## `play`, and `wait` on `scene`), then closes out the video file.
+  ##
+  ## If `scene.audioTrackBuilder` is set, the video is first written to a
+  ## temp file, then the builder is invoked to produce a mixed audio track,
+  ## and finally video + audio are muxed into `outputPath`. Otherwise the
+  ## video is written directly to `outputPath`.
   scene.surface = imageSurfaceCreate(FORMAT_ARGB32, scene.pixelWidth.int32,
                                        scene.pixelHeight.int32)
   scene.ctx = create(scene.surface)
@@ -121,6 +140,9 @@ proc renderScene*(scene: Scene, construct: proc(s: Scene),
   let (dir, _, _) = splitFile(outputPath)
   if dir.len > 0 and not dirExists(dir):
     createDir(dir)
+
+  let useTemp = scene.audioTrackBuilder != nil
+  let videoPath = if useTemp: outputPath & ".tmpvid.mp4" else: outputPath
 
   let args = @[
     "-y",
@@ -131,7 +153,7 @@ proc renderScene*(scene: Scene, construct: proc(s: Scene),
     "-i", "-",
     "-c:v", "libx264",
     "-pix_fmt", "yuv420p",
-    outputPath,
+    videoPath,
   ]
   scene.ffmpeg = startProcess("ffmpeg", args = args,
                                options = {poUsePath, poStdErrToStdOut})
@@ -145,3 +167,29 @@ proc renderScene*(scene: Scene, construct: proc(s: Scene),
 
   scene.ctx.destroy()
   scene.surface.destroy()
+
+  # Audio mux step: voiceover (or any other audio producer) hooks in here.
+  if useTemp:
+    let audioPath = scene.audioTrackBuilder(scene)
+    if audioPath.len > 0 and fileExists(audioPath):
+      let muxArgs = @[
+        "-y",
+        "-i", videoPath,
+        "-i", audioPath,
+        "-map", "0:v",
+        "-map", "1:a",
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-shortest",
+        outputPath,
+      ]
+      let muxProc = startProcess("ffmpeg", args = muxArgs,
+                                  options = {poUsePath, poStdErrToStdOut})
+      discard muxProc.waitForExit()
+      muxProc.close()
+      removeFile(videoPath)
+    else:
+      # Builder returned nothing useful -- just promote the temp file.
+      if fileExists(outputPath): removeFile(outputPath)
+      moveFile(videoPath, outputPath)

@@ -1,8 +1,8 @@
 # Package
 
-version       = "1.0.0"
+version       = "1.2.0"
 author        = "himanshm"
-description   = "A port of ManimCE in Nim"
+description   = "A port of ManimCE in Nim (with optional voiceover support)"
 license       = "MIT"
 srcDir        = "src"
 

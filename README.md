@@ -114,20 +114,267 @@ TRANSPARENT`.
 - `transform()` on text or groups falls back to treating them as a single
   point (effectively a cross-fade) rather than morphing their internal
   structure — full support would need per-glyph/per-child point sampling.
-- No 3D, no camera moves/zooming, no LaTeX rendering, no audio.
+- No 3D, no camera moves/zooming, no LaTeX rendering.
 - Text uses Cairo's "toy" text API (`select_font_face` / `show_text`), so
   font selection is by family name only, not arbitrary font files.
 
 These are reasonable follow-ups if you want to extend the package further.
+**Audio / voiceover is supported** via the optional `nimanim/voiceover`
+module — see "Voiceover" below.
+
+## Voiceover
+
+`nimanim/voiceover` is an optional module that adds narration to scenes,
+modelled on the relationship between Python's `manim-voiceover` (and
+`kokoro-manim-voiceover`) and `manim` itself. The design is:
+
+* **A pluggable `SpeechSynthesizer` interface** so any TTS engine can be
+  wired in. Four backends ship in the box:
+  * `espeak` — robotic but free and zero-setup; **the default backend**.
+    Automatically uses `espeak-ng` if available, falling back to the
+    older `espeak` binary if not. Works offline everywhere.
+  * `kokoro` — high-quality neural TTS via the Python `kokoro` package;
+    exposes real per-word timestamps for accurate captioning.
+  * `coqui` — neural TTS via the Python `TTS` (Coqui) package; supports
+    many model families (XTTS, VITS, Glow-TTS, Tacotron2, YourTTS) and
+    multi-speaker / multilingual voices.
+  * `command` — generic shell-template driver for any other TTS CLI
+    (`festival`, `pico2wave`, `say`, …).
+* **A `VoiceoverScene` wrapper** around `Scene` that adds `say()` and a
+  `voiceover(s, "text"):` template for interleaving narration with
+  animations. A convenience overload `newVoiceoverScene(scene)` uses the
+  default backend (espeak-ng) so you don't have to pick one explicitly
+  during development.
+* **On-disk caching** keyed by `(text, voice)` so re-rendering a scene
+  is essentially free after the first run.
+* **Per-word `WordBoundary` timestamps** surfaced from backends that
+  provide them, with an even-distribution fallback for those that don't.
+* **SRT / WebVTT caption export** via `scene.writeCaptions(path)`.
+* **No video re-encode** — audio is muxed in with `ffmpeg -c:v copy`,
+  so the voiceover step adds negligible time on top of the video render.
+
+### Setup
+
+In addition to nimanim's own prerequisites (Cairo + ffmpeg), the
+voiceover module needs a TTS engine on your `PATH`:
+
+```bash
+# eSpeak-NG (default backend, free, offline, zero-setup)
+sudo apt-get install espeak-ng       # Debian/Ubuntu (preferred)
+sudo apt-get install espeak          # legacy fallback if ng isn't available
+brew install espeak                  # macOS
+
+# Kokoro (high-quality neural TTS) -- optional, requires Python 3.10+
+pip install kokoro>=0.9 misaki[en]>=0.9.1 soundfile
+
+# Coqui TTS (neural TTS, many model families) -- optional, requires Python 3.9+
+pip install TTS soundfile
+```
+
+If no backend is explicitly configured, `nimanim/voiceover` uses
+`espeak-ng` (or `espeak` as a fallback). To use Kokoro or Coqui, import
+the corresponding module and pass it to `newVoiceoverScene` explicitly.
+
+### Quick example
+
+```nim
+import nimanim
+import nimanim/voiceover
+# Default backend (espeak-ng) is wired in automatically -- no backend
+# import needed. To swap, e.g.:
+#   import nimanim/voiceover/kokoro
+#   let synth = newKokoroSynthesizer()
+
+proc construct(s: VoiceoverScene) =
+  let circle = newCircle(radius = 1.5, fillColor = BLUE, fillOpacity = 0.5)
+  s.add(circle)
+
+  # `say` speaks and waits for the clip to finish -- no parallel animation.
+  s.say("Behold: a circle.")
+
+  # `voiceover` speaks while running the block. If the block is shorter
+  # than the narration, the scene waits for the remainder. If it's
+  # longer, the narration simply ends mid-way.
+  voiceover(s, "Watch it slide to the right."):
+    s.play(shiftBy(circle, (3.0, 0.0), duration = 1.4))
+
+  s.say("And that's the demo.")
+
+# No synth argument -> uses the default (espeak-ng).
+let scene = newVoiceoverScene(
+  newScene(pixelWidth = 1280, pixelHeight = 720, fps = 30),
+)
+renderScene(scene, construct, "output/narrated.mp4")
+scene.writeCaptions("output/narrated.srt")
+```
+
+To swap backends, just pass a different synthesizer:
+
+```nim
+import nimanim/voiceover/kokoro
+let scene = newVoiceoverScene(
+  newScene(pixelWidth = 1280, pixelHeight = 720, fps = 30),
+  newKokoroSynthesizer(voice = "af_heart"),
+)
+
+# Or Coqui:
+import nimanim/voiceover/coqui
+let scene = newVoiceoverScene(
+  newScene(pixelWidth = 1280, pixelHeight = 720, fps = 30),
+  newCoquiSynthesizer(modelName = "tts_models/en/ljspeech/glow-tts"),
+)
+```
+
+### Run the bundled examples
+
+```bash
+# Default backend (espeak-ng) -- simplest, no explicit synth
+nim c -r -d:release --path:src examples/voiceover_default.nim
+# -> output/voiceover_default.mp4 + output/voiceover_default.srt
+
+# Explicit espeak backend (still uses espeak-ng if available)
+nim c -r -d:release --path:src examples/voiceover_scene.nim
+# -> output/voiceover_scene.mp4 + output/voiceover_scene.srt
+
+# Kokoro backend (needs `pip install kokoro misaki[en] soundfile`)
+nim c -r -d:release --path:src examples/voiceover_kokoro.nim
+# -> output/voiceover_kokoro.mp4 + output/voiceover_kokoro.srt
+
+# Coqui backend (needs `pip install TTS soundfile`)
+nim c -r -d:release --path:src examples/voiceover_coqui.nim
+# -> output/voiceover_coqui.mp4 + output/voiceover_coqui.srt
+
+# Generic command backend (drives any TTS CLI via a template)
+nim c -r -d:release --path:src examples/voiceover_command.nim
+```
+
+### Backends at a glance
+
+| Backend       | Default? | Quality  | Word timestamps | Setup                     |
+|---------------|----------|----------|-----------------|---------------------------|
+| `espeak`      | **yes**  | robotic  | approximated    | `apt install espeak-ng`   |
+| `kokoro`      |          | natural  | real (model)    | `pip install kokoro ...`  |
+| `coqui`       |          | natural  | approximated    | `pip install TTS ...`     |
+| `command`     |          | depends  | approximated    | any TTS CLI on PATH       |
+
+The `espeak` backend automatically prefers `espeak-ng` (the modern fork
+with more languages and active maintenance) when both are installed, and
+silently falls back to the legacy `espeak` binary otherwise. Either way
+the user-facing API is identical.
+
+`newCommandSynthesizer(cmd = "pico2wave -w {output} {text}")` is the
+escape hatch for engines without a dedicated module: `{text}` and
+`{output}` are substituted before invocation, and the resulting WAV's
+duration is probed with `ffprobe`.
+
+### Coqui TTS specifics
+
+Coqui TTS supports many model families. The constructor's `modelName`
+parameter picks one:
+
+```nim
+# Small (~100MB), single-speaker American female. Good for development.
+let s1 = newCoquiSynthesizer(modelName = "tts_models/en/ljspeech/glow-tts")
+
+# Slower, slightly more natural than glow-tts.
+let s2 = newCoquiSynthesizer(modelName = "tts_models/en/ljspeech/tacotron2-DDC")
+
+# XTTS v2 (~1.5GB): multilingual + multi-speaker.
+let s3 = newCoquiSynthesizer(
+  modelName = "tts_models/multilingual/multi-dataset/xtts_v2",
+  speaker = "Ana Florence",
+  language = "en",
+)
+
+# Use a CUDA GPU if available (much faster for large models).
+let s4 = newCoquiSynthesizer(
+  modelName = "tts_models/multilingual/multi-dataset/xtts_v2",
+  speaker = "Ana Florence",
+  language = "en",
+  useCuda = true,
+)
+```
+
+List all available models with:
+
+```bash
+python3 -c "from TTS.api import TTS; print(TTS().list_models())"
+```
+
+`speaker` and `language` are silently ignored for single-speaker models
+so the same scene code works whether you're using glow-tts or XTTS.
+
+### Writing your own backend
+
+A `SpeechSynthesizer` is just a `ref object` with three fields:
+`name`, `defaultVoice`, `cacheDir`, and a `synthesizeFn` closure that
+takes `(text, voice)` and returns a `SynthesisResult` (audio path +
+duration + optional word boundaries). Caching, manifest serialisation,
+and ffprobe-based duration fallback are handled by the framework, so a
+new backend only needs the actual TTS call:
+
+```nim
+import nimanim/voiceover/synth
+
+proc newMySynthesizer(): SpeechSynthesizer =
+  proc fn(text, voice: string): SynthesisResult {.closure.} =
+    let tmpPath = "/tmp/my_tts.wav"
+    # ... call your TTS engine, write to tmpPath ...
+    result = SynthesisResult(
+      audioPath: tmpPath,
+      duration: 0.0,            # 0 -> framework will ffprobe it
+      sampleRate: 0,
+      words: @[],               # empty -> caption.nim will approximate
+    )
+  result = newSpeechSynthesizer("my-tts", fn, defaultVoice = "default")
+```
+
+### How audio gets into the MP4
+
+`Scene` has an optional `audioTrackBuilder` hook (a `proc(s: Scene):
+string`). When set, `renderScene`:
+
+1. Writes the video to `<output>.tmpvid.mp4` instead of straight to the
+   final path.
+2. Runs `construct` as usual — frames are piped to ffmpeg just like the
+   no-audio case.
+3. After construct returns, calls `audioTrackBuilder(scene)` to obtain
+   the path to a mixed WAV (the voiceover module uses ffmpeg's `adelay`
+   + `amix` filters to combine all queued segments at their scheduled
+   start times).
+4. Muxes the temp video and mixed audio with `ffmpeg -c:v copy -c:a aac
+   -shortest` into the final output.
+
+This means voiceover adds **no extra video encode** — only an audio
+encode (AAC) and a stream copy, both very fast.
 
 ## File layout
 
 ```
-nimanim.nimble          package manifest
-src/nimanim.nim         single import point, re-exports everything below
-src/nimanim/core.nim    Point2, Color, easing functions
-src/nimanim/mobject.nim shapes, text, groups, bezier paths, drawing
+nimanim.nimble              package manifest
+src/nimanim.nim             single import point, re-exports the base library
+src/nimanim/core.nim        Point2, Color, easing functions
+src/nimanim/mobject.nim     shapes, text, groups, bezier paths, drawing
 src/nimanim/animation.nim   animation kinds + interpolation
-src/nimanim/scene.nim   coordinate mapping, add/play/wait, ffmpeg piping
-examples/basic_scene.nim   a runnable demo scene
+src/nimanim/scene.nim       coordinate mapping, add/play/wait, ffmpeg piping,
+                            + optional `audioTrackBuilder` hook
+src/nimanim/voiceover.nim   optional module: re-exports the voiceover API
+src/nimanim/voiceover/
+  synth.nim                 SpeechSynthesizer interface + on-disk cache
+                            + newDefaultSynthesizer() (espeak-ng)
+  mix.nim                   ffmpeg adelay+amix segment mixer
+  scene.nim                 VoiceoverScene, say(), voiceover() template,
+                            + newVoiceoverScene(scene) overload (default synth)
+  caption.nim               SRT / WebVTT subtitle export
+  espeak.nim                eSpeak-NG/eSpeak backend (DEFAULT -- auto-detects)
+  kokoro.nim                Kokoro backend (high-quality neural TTS)
+  coqui.nim                 Coqui TTS backend (XTTS, VITS, Glow-TTS, ...)
+  command.nim               generic CLI-template backend
+examples/basic_scene.nim        a runnable demo scene (no audio)
+examples/voiceover_default.nim  default-backend demo (espeak-ng, no config)
+examples/voiceover_scene.nim    explicit espeak backend demo + SRT
+examples/voiceover_kokoro.nim   Kokoro-narrated demo (needs pip install)
+examples/voiceover_coqui.nim    Coqui-narrated demo (needs pip install)
+examples/voiceover_command.nim  generic command-backend demo
+tests/voiceover_compile.nim     compile + API-surface smoke test
 ```
