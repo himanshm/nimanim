@@ -3,7 +3,9 @@ nimblecache/
 htmldocs/
 output/
 basic_scene
+new_features
 media/
 *.tmpvid.mp4
 voiceover_*
 kokoro_tmp/
+.venv

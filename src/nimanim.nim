@@ -19,11 +19,13 @@
 ##   renderScene(scene, construct, "output/my_video.mp4")
 
 import ./nimanim/core
+import ./nimanim/font
 import ./nimanim/mobject
 import ./nimanim/animation
 import ./nimanim/scene
 
 export core
+export font
 export mobject
 export animation
 export scene

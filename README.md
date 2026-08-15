@@ -18,18 +18,30 @@ Verified in this environment: compiles cleanly with no warnings, and
 ## Requirements
 
 Install these before using the package — `nimble install` only fetches the
-Nim-level dependency (the Cairo *bindings*), not the C library or ffmpeg:
+Nim-level dependency (the Cairo *bindings*), not the C libraries or ffmpeg:
 
 ```bash
 # Debian/Ubuntu
-sudo apt-get install libcairo2-dev pkg-config ffmpeg
+sudo apt-get install libcairo2-dev libfreetype6-dev pkg-config ffmpeg
 
 # macOS
-brew install cairo pkg-config ffmpeg
+brew install cairo freetype pkg-config ffmpeg
 ```
 
 `ffmpeg` must be on your `PATH` — it's invoked as a subprocess to encode
 frames into the output MP4.
+
+`libfreetype` is required by `nimanim/font.nim` to load arbitrary
+`.ttf` / `.otf` font files via `newText(..., fontFile = "...")`. If you
+only ever use the `fontFamily` (default) mode of `newText`, FreeType
+isn't loaded, but the link flag is always applied at build time.
+
+Optional: to use `newLatex(r"E = mc^2")` you also need `pdflatex` and
+`pdftoppm` on your `PATH`:
+
+```bash
+sudo apt-get install texlive-latex-base texlive-latex-extra poppler-utils
+```
 
 ## Install
 
@@ -83,14 +95,20 @@ convention as manim), measured in "scene units" — `Scene.frameWidth` /
 **Shapes** (`src/nimanim/mobject.nim`): `newCircle`, `newSquare`,
 `newRectangle`, `newLine`, `newPolygon`, `newTriangle`, `newArc`, `newText`,
 `newGroup`, `newPath` (freeform, via `lineTo` / `curveTo` / `closePath` —
-cubic beziers). Instant (non-animated) mutators: `shift`, `moveTo`,
-`rotateBy`, `scaleBy`, `setColor`, `setOpacity`, `copyMobject`.
+cubic beziers), `newImage` (PNG, drawn at native aspect ratio or
+arbitrary size), `newLatex` (LaTeX source → PNG via `pdflatex` +
+`pdftoppm`, cached on disk). Instant (non-animated) mutators: `shift`,
+`moveTo`, `rotateBy`, `scaleBy`, `setColor`, `setOpacity`, `copyMobject`.
 
 **Animations** (`src/nimanim/animation.nim`): `create`, `uncreate`,
 `fadeIn`, `fadeOut`, `shiftBy`, `moveTo`, `rotateBy`, `scaleTo`, `write`
-(text), and `transform` (morphs one mobject into another — both are
-approximated as point outlines and interpolated, so it works between any
-two shape kinds, e.g. circle → triangle). Every animation constructor takes
+(real stroke-by-stroke glyph tracing via `cairo_text_path` +
+`cairo_copy_path_flat`), and `transform` (morphs one mobject into
+another — both are approximated as point outlines and interpolated,
+so it works between any two shape kinds, e.g. circle → triangle, and
+**now also works on text and groups** by sampling glyph outlines /
+children's boundaries respectively). Camera animations: `panTo`,
+`zoomTo`. Every animation constructor takes
 `duration` (seconds) and `easing` (an `EasingFunc`, i.e. `proc(t: float):
 float`); built-ins are in `core.nim`: `linear`, `smoothstep` (default),
 `easeInSine/OutSine/InOutSine`, `easeInCubic/OutCubic/InOutCubic`,
@@ -108,17 +126,34 @@ TRANSPARENT`.
 
 ## Known limitations (honest notes, not swept under the rug)
 
-- `write()` is a fade/scale-in approximation, not manim's actual
-  stroke-by-stroke glyph tracing (that needs font outline access this
-  package doesn't have).
-- `transform()` on text or groups falls back to treating them as a single
-  point (effectively a cross-fade) rather than morphing their internal
-  structure — full support would need per-glyph/per-child point sampling.
-- No 3D, no camera moves/zooming, no LaTeX rendering.
-- Text uses Cairo's "toy" text API (`select_font_face` / `show_text`), so
-  font selection is by family name only, not arbitrary font files.
+- `write()` **now performs true stroke-by-stroke glyph tracing**: the
+  text's glyph outlines are extracted via `cairo_text_path` +
+  `cairo_copy_path_flat`, then revealed progressively along the
+  cumulative arc length. Works for any font (including those loaded via
+  `fontFile = "..."`). This replaces the previous fade/scale-in
+  approximation.
+- `transform()` on text or groups **now morphs the actual shape**:
+  text's glyph outlines are sampled as a point cloud (using the same
+  path-flattening technique as `write()`), and groups recursively sample
+  each child's boundary and concatenate. The previous behaviour (treating
+  text/groups as a single point, effectively a cross-fade) is no longer
+  the fallback.
+- Camera moves and zooming are now supported via the `Camera` type on
+  `Scene`. Animate the camera with `panTo((x, y), duration = ...)`
+  and `zoomTo(2.0, duration = ...)`. LaTeX rendering is supported via
+  `newLatex(r"E = mc^2")` (requires `pdflatex` + `pdftoppm` on PATH).
+  **3D is still out of scope** — adding it would require Z coordinates
+  on mobjects, depth sorting, and perspective projection, all of which
+  are a much larger architectural change.
+- Text **can now load arbitrary `.ttf` / `.otf` font files** via the
+  `fontFile` parameter on `newText()`. Loading uses FreeType + Cairo's
+  FreeType bridge, and the loaded `FontFace` is cached per process so
+  repeated `newText(..., fontFile=...)` calls with the same path are
+  cheap. The previous "toy text API only" limitation is lifted;
+  `cairo_toy_font_face_create` (the proper Cairo API for family-name
+  fonts) is now used for the `fontFamily`-only path, replacing the
+  deprecated `cairo_select_font_face` Context mutator.
 
-These are reasonable follow-ups if you want to extend the package further.
 **Audio / voiceover is supported** via the optional `nimanim/voiceover`
 module — see "Voiceover" below.
 
@@ -353,10 +388,16 @@ encode (AAC) and a stream copy, both very fast.
 ```
 nimanim.nimble              package manifest
 src/nimanim.nim             single import point, re-exports the base library
-src/nimanim/core.nim        Point2, Color, easing functions
-src/nimanim/mobject.nim     shapes, text, groups, bezier paths, drawing
-src/nimanim/animation.nim   animation kinds + interpolation
-src/nimanim/scene.nim       coordinate mapping, add/play/wait, ffmpeg piping,
+src/nimanim/core.nim        Point2, Color, Camera, easing functions
+src/nimanim/font.nim        FreeType + Cairo font-face loading (fontFile support),
+                            + glyph-path flattening helpers used by write() /
+                            transform() to trace / morph text outlines
+src/nimanim/mobject.nim     shapes, text (with fontFile), groups, bezier paths,
+                            images, LaTeX (newLatex), drawing
+src/nimanim/animation.nim   animation kinds + interpolation,
+                            + camera animations (panTo, zoomTo)
+src/nimanim/scene.nim       coordinate mapping (with camera pan/zoom),
+                            add/play/wait, ffmpeg piping,
                             + optional `audioTrackBuilder` hook
 src/nimanim/voiceover.nim   optional module: re-exports the voiceover API
 src/nimanim/voiceover/
@@ -371,10 +412,12 @@ src/nimanim/voiceover/
   coqui.nim                 Coqui TTS backend (XTTS, VITS, Glow-TTS, ...)
   command.nim               generic CLI-template backend
 examples/basic_scene.nim        a runnable demo scene (no audio)
+examples/new_features.nim        demo of stroke-tracing write(), text morph,
+                                camera pan/zoom (added with the limitation fixes)
 examples/voiceover_default.nim  default-backend demo (espeak-ng, no config)
 examples/voiceover_scene.nim    explicit espeak backend demo + SRT
 examples/voiceover_kokoro.nim   Kokoro-narrated demo (needs pip install)
 examples/voiceover_coqui.nim    Coqui-narrated demo (needs pip install)
 examples/voiceover_command.nim  generic command-backend demo
-tests/voiceover_compile.nim     compile + API-surface smoke test
+tests/voiceover_compile.nim     compile + API-surface smoke test (31 assertions)
 ```

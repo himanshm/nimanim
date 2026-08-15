@@ -26,9 +26,9 @@ type
     fps*: int
     backgroundColor*: Color
     mobjects*: seq[Mobject]
-
-    ## Optional audio hook -- nil for plain Scene, set by VoiceoverScene.
+    camera*: Camera          ## pan/zoom transform; default is center=(0,0), zoom=1.0
     audioTrackBuilder*: AudioTrackBuilder
+      ## Optional audio hook -- nil for plain Scene, set by VoiceoverScene.
 
     surface: ptr Surface
     ctx: ptr Context
@@ -43,6 +43,7 @@ proc newScene*(pixelWidth = 1280, pixelHeight = 720, fps = 30,
     pixelWidth: pixelWidth, pixelHeight: pixelHeight, fps: fps,
     frameWidth: frameWidth, frameHeight: frameHeight,
     backgroundColor: backgroundColor, mobjects: @[],
+    camera: Camera(center: (0.0, 0.0), zoom: 1.0),
   )
 
 proc add*(scene: Scene, mobjects: varargs[Mobject]) =
@@ -58,11 +59,24 @@ proc pixelsPerUnit(scene: Scene): float =
   scene.pixelWidth.float / scene.frameWidth
 
 proc mapToPixel(scene: Scene): PointMap =
+  ## Builds the scene-unit -> pixel-coordinate mapping, incorporating the
+  ## camera's pan + zoom. The transform is:
+  ##
+  ##   pixel = (frameCenter) + (scenePt - camera.center) * ppu * camera.zoom
+  ##
+  ## with the y-axis flipped (scene is y-up, pixels are y-down). At the
+  ## default camera (center=(0,0), zoom=1.0), this reduces to the same
+  ## mapping as before the Camera type was introduced, so existing scenes
+  ## render identically.
   let ppu = scene.pixelsPerUnit
+  let z = scene.camera.zoom
+  let camCx = scene.camera.center.x
+  let camCy = scene.camera.center.y
   let cx = scene.pixelWidth.float / 2.0
   let cy = scene.pixelHeight.float / 2.0
   result = proc(p: Point2): Point2 =
-    (cx + p.x * ppu, cy - p.y * ppu) ## flip y: scene is y-up, pixels are y-down
+    (cx + (p.x - camCx) * ppu * z, cy - (p.y - camCy) * ppu * z)
+    # flip y: scene is y-up, pixels are y-down
 
 proc writeFrame(scene: Scene) =
   ## Renders the current state of `scene.mobjects` to one frame and pipes
@@ -75,7 +89,10 @@ proc writeFrame(scene: Scene) =
   cr.restore()
 
   let mapPt = scene.mapToPixel()
-  let ppu = scene.pixelsPerUnit
+  # `effectivePpu` includes the camera zoom so that stroke widths and
+  # font sizes scale up/down with the camera (consistent with how a real
+  # camera would render the scene).
+  let ppu = scene.pixelsPerUnit * scene.camera.zoom
   for m in scene.mobjects:
     draw(cr, m, mapPt, ppu)
 
@@ -99,6 +116,10 @@ proc wait*(scene: Scene, seconds: float = 1.0) =
   renderFrames(scene, seconds)
 
 proc playImpl(scene: Scene, anims: openArray[Animation], duration: float) =
+  # Bind any camera animations to this scene's camera before stepping.
+  for a in anims:
+    if a.isCamera and a.camera == nil:
+      a.camera = scene.camera
   let frameCount = max(1, int(duration * scene.fps.float + 0.5))
   for f in 0..<frameCount:
     let elapsed = (f.float + 1.0) / frameCount.float * duration

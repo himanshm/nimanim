@@ -117,6 +117,10 @@ proc play*(vs: VoiceoverScene, anims: varargs[Animation]) =
     if a.duration > duration: duration = a.duration
   if duration <= 0: duration = 1.0
   let frameCount = max(1, int(duration * vs.base.fps.float + 0.5))
+  # Bind any camera animations to the underlying scene's camera.
+  for a in anims:
+    if a.isCamera and a.camera == nil:
+      a.camera = vs.base.camera
   vs.base.play(anims)
   vs.elapsed += frameCount.float / vs.base.fps.float
 
@@ -124,6 +128,10 @@ proc play*(vs: VoiceoverScene, runTime: float, anims: varargs[Animation]) =
   ## Like `Scene.play(runTime, anims)` -- forces the whole call to take
   ## exactly `runTime` seconds -- and advances the elapsed-time clock.
   let frameCount = max(1, int(runTime * vs.base.fps.float + 0.5))
+  # Bind any camera animations to the underlying scene's camera.
+  for a in anims:
+    if a.isCamera and a.camera == nil:
+      a.camera = vs.base.camera
   vs.base.play(runTime, anims)
   vs.elapsed += frameCount.float / vs.base.fps.float
 

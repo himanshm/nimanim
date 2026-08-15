@@ -21,6 +21,17 @@ type
     ## Scene and passed down into drawing code so mobjects never need to
     ## know about pixel resolution.
 
+  Camera* = ref object
+    ## A 2D camera: pan + zoom over the scene. The camera's `center` is in
+    ## scene units (same coordinate system as `Mobject.center`), and `zoom`
+    ## is a multiplier (>1 = zoom in, <1 = zoom out). 1.0 = no zoom.
+    ##
+    ## Defined here (rather than in `scene.nim`) to avoid a circular import
+    ## between `scene.nim` and `animation.nim`: animations reference
+    ## `Camera` to pan/zoom it, and `scene.nim` references `Animation`.
+    center*: Point2
+    zoom*: float
+
 # ---------------------------------------------------------------------------
 # Color helpers
 # ---------------------------------------------------------------------------
