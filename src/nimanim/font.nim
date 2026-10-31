@@ -212,10 +212,14 @@ proc copyPathFlatToSeqs*(cr: ptr Context): FlattenedPath =
       dtype*: cint
       dlen*: cint
       # The union is 16 bytes total; pad the header to match so pointer
-      # arithmetic via `UncheckedArray` advances correctly.
-      pad0*, pad1*: float64
+      # arithmetic via `UncheckedArray` advances correctly
+      # (4 + 4 + 8 = 16 bytes).
+      pad0*: float64
     CairoPathPoint = object
       x*, y*: float64
+  static:
+    doAssert sizeof(CairoPathHeader) == 16 and sizeof(CairoPathPoint) == 16,
+      "both views must match the 16-byte cairo_path_data_t union"
   let p: ptr Path = cr.copyPathFlat()
   if p == nil or p.data == nil:
     cr.newPath()
